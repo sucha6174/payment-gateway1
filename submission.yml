@@ -1,0 +1,23 @@
+version: 1.0
+name: Payment Gateway Async
+description: Async payment gateway with Redis, Workers, and Webhooks
+
+build:
+  # Installs dependencies and builds the project
+  - cd backend && mvn clean package -DskipTests
+
+run:
+  # Starts all services using Docker Compose
+  - docker-compose up -d --build
+
+test:
+  # Health check to ensure API is up
+  - curl --fail http://localhost:8000/api/v1/test/jobs/status || exit 1
+  # Check if Redis is up
+  - docker exec redis_gateway redis-cli ping || exit 1
+
+verify:
+  # Verify Worker is running
+  - docker ps | grep gateway_worker || exit 1
+  # Verify SDK is served
+  - curl --fail http://localhost:3001/checkout.js || exit 1

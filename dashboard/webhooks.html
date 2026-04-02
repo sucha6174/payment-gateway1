@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Webhooks | Payment Gateway</title>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <style>
+        :root {
+            --primary: #2563eb;
+            --primary-hover: #1d4ed8;
+            --sidebar-bg: #0f172a;
+            --sidebar-text: #94a3b8;
+            --bg-body: #f1f5f9;
+            --text-main: #334155;
+            --card-bg: #ffffff;
+            --border: #e2e8f0;
+            --success: #10b981;
+            --danger: #ef4444;
+            --warning: #f59e0b;
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; font-family: 'Segoe UI', system-ui, -apple-system, sans-serif; }
+
+        body { display: flex; background-color: var(--bg-body); height: 100vh; color: var(--text-main); overflow: hidden; }
+
+        /* Sidebar (Same as Index) */
+        .sidebar { width: 260px; background-color: var(--sidebar-bg); color: var(--sidebar-text); display: flex; flex-direction: column; padding: 25px; }
+        .brand { font-size: 1.4rem; font-weight: 700; color: #f8fafc; margin-bottom: 40px; display: flex; align-items: center; gap: 12px; }
+        .nav-item { list-style: none; margin-bottom: 8px; }
+        .nav-link { text-decoration: none; color: var(--sidebar-text); display: flex; align-items: center; gap: 12px; padding: 12px 16px; border-radius: 8px; transition: all 0.2s; font-weight: 500; }
+        .nav-link:hover, .nav-link.active { background-color: #1e293b; color: #f8fafc; }
+
+        /* Main Content */
+        .main-content { flex: 1; padding: 30px 40px; overflow-y: auto; }
+        header { margin-bottom: 30px; }
+        h1 { font-size: 1.8rem; color: #0f172a; margin-bottom: 8px; }
+        .subtitle { color: #64748b; }
+
+        /* Configuration Card */
+        .config-card { background: var(--card-bg); padding: 30px; border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); border: 1px solid var(--border); margin-bottom: 30px; }
+        .form-group { margin-bottom: 20px; }
+        label { display: block; margin-bottom: 8px; font-weight: 600; font-size: 0.9rem; color: #475569; }
+        
+        input[type="url"] { width: 100%; padding: 10px 12px; border: 1px solid var(--border); border-radius: 6px; font-size: 0.95rem; color: #1e293b; transition: border 0.2s; }
+        input[type="url"]:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1); }
+
+        .secret-box { background: #f8fafc; border: 1px solid var(--border); padding: 10px 12px; border-radius: 6px; font-family: 'Courier New', monospace; color: #334155; display: inline-block; margin-right: 10px; min-width: 200px; }
+
+        .btn { padding: 10px 16px; border-radius: 6px; font-weight: 600; font-size: 0.9rem; cursor: pointer; border: none; transition: 0.2s; display: inline-flex; align-items: center; gap: 8px; }
+        .btn-primary { background: var(--primary); color: white; }
+        .btn-primary:hover { background: var(--primary-hover); }
+        .btn-secondary { background: white; border: 1px solid var(--border); color: #475569; }
+        .btn-secondary:hover { background: #f8fafc; border-color: #cbd5e1; }
+        .btn-retry { background: white; border: 1px solid var(--border); color: var(--primary); font-size: 0.8rem; padding: 6px 12px; }
+        .btn-retry:hover { border-color: var(--primary); background: #eff6ff; }
+
+        .actions-row { margin-top: 25px; display: flex; gap: 12px; }
+
+        /* Logs Table */
+        .table-container { background: var(--card-bg); border-radius: 12px; border: 1px solid var(--border); box-shadow: 0 1px 3px rgba(0,0,0,0.1); overflow: hidden; }
+        .table-header { padding: 20px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; }
+        .table-header h3 { font-size: 1.1rem; color: #0f172a; }
+
+        table { width: 100%; border-collapse: collapse; }
+        th { text-align: left; padding: 16px 24px; background: #f8fafc; color: #64748b; font-weight: 600; font-size: 0.85rem; text-transform: uppercase; border-bottom: 1px solid var(--border); }
+        td { padding: 16px 24px; border-bottom: 1px solid var(--border); color: #334155; font-size: 0.95rem; }
+        tr:last-child td { border-bottom: none; }
+        tr:hover td { background: #f8fafc; }
+
+        /* Status Badges */
+        .badge { padding: 4px 10px; border-radius: 20px; font-size: 0.75rem; font-weight: 700; text-transform: uppercase; }
+        .badge-success { background: #dcfce7; color: #166534; }
+        .badge-failed { background: #fee2e2; color: #991b1b; }
+        .badge-pending { background: #fef3c7; color: #92400e; }
+        
+        .code-cell { font-family: 'Courier New', monospace; font-size: 0.9rem; }
+
+    </style>
+</head>
+<body>
+
+    <nav class="sidebar">
+        <div class="brand">
+            <i class="fa-solid fa-layer-group"></i> PayGateway
+        </div>
+        <ul class="nav-item">
+            <li><a href="index.html" class="nav-link"><i class="fa-solid fa-house"></i> Dashboard</a></li>
+            <li><a href="#" class="nav-link active"><i class="fa-solid fa-satellite-dish"></i> Webhooks</a></li>
+            <li><a href="docs.html" class="nav-link"><i class="fa-solid fa-book-open"></i> API Docs</a></li>
+            <li><a href="#" class="nav-link"><i class="fa-solid fa-gear"></i> Settings</a></li>
+        </ul>
+    </nav>
+
+    <main class="main-content">
+        <header>
+            <h1>Webhook Management</h1>
+            <p class="subtitle">Configure endpoints and monitor event delivery performance.</p>
+        </header>
+
+        <div class="config-card" data-test-id="webhook-config">
+            <h3 style="margin-bottom: 20px; font-size: 1.2rem;">Configuration</h3>
+            
+            <form data-test-id="webhook-config-form" onsubmit="event.preventDefault(); alert('Configuration Saved Successfully!');">
+                <div class="form-group">
+                    <label>Webhook Endpoint URL</label>
+                    <input data-test-id="webhook-url-input" type="url" value="http://localhost:4000/webhook" placeholder="https://api.yoursite.com/events">
+                </div>
+                
+                <div class="form-group">
+                    <label>Signing Secret</label>
+                    <div>
+                        <span data-test-id="webhook-secret" class="secret-box">whsec_test_abc123</span>
+                        <button data-test-id="regenerate-secret-button" type="button" class="btn btn-secondary">
+                            <i class="fa-solid fa-rotate"></i> Regenerate
+                        </button>
+                    </div>
+                </div>
+                
+                <div class="actions-row">
+                    <button data-test-id="save-webhook-button" type="submit" class="btn btn-primary">
+                        <i class="fa-solid fa-save"></i> Save Configuration
+                    </button>
+                    <button data-test-id="test-webhook-button" type="button" class="btn btn-secondary">
+                        <i class="fa-solid fa-paper-plane"></i> Send Test Event
+                    </button>
+                </div>
+            </form>
+        </div>
+
+        <div class="table-container">
+            <div class="table-header">
+                <h3>Delivery Logs</h3>
+                <button onclick="loadLogs()" class="btn btn-secondary" style="padding: 6px 12px; font-size: 0.85rem;">
+                    <i class="fa-solid fa-rotate-right"></i> Refresh
+                </button>
+            </div>
+            <table data-test-id="webhook-logs-table">
+                <thead>
+                    <tr>
+                        <th>Event Type</th>
+                        <th>Status</th>
+                        <th>Attempts</th>
+                        <th>Last Attempt</th>
+                        <th>Response</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody id="logs-body">
+                    <tr><td colspan="6" style="text-align: center; color: #94a3b8;">Loading logs...</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </main>
+
+    <script>
+        async function loadLogs() {
+            try {
+                const res = await fetch('http://localhost:8000/api/v1/webhooks', {
+                    headers: { 'X-Api-Key': 'key_test_abc123', 'X-Api-Secret': 'secret_test_xyz789' }
+                });
+                const data = await res.json();
+                
+                const tbody = document.getElementById('logs-body');
+                tbody.innerHTML = '';
+
+                if(data.data.length === 0) {
+                    tbody.innerHTML = '<tr><td colspan="6" style="text-align: center; padding: 30px;">No webhook logs found.</td></tr>';
+                    return;
+                }
+
+                data.data.forEach(log => {
+                    const tr = document.createElement('tr');
+                    tr.setAttribute('data-test-id', 'webhook-log-item');
+                    tr.setAttribute('data-webhook-id', log.id);
+                    
+                    // Determine badge color
+                    let badgeClass = 'badge-pending';
+                    if (log.status === 'success') badgeClass = 'badge-success';
+                    if (log.status === 'failed') badgeClass = 'badge-failed';
+
+                    tr.innerHTML = `
+                        <td data-test-id="webhook-event" style="font-weight: 500;">${log.event}</td>
+                        <td><span class="badge ${badgeClass}" data-test-id="webhook-status">${log.status}</span></td>
+                        <td data-test-id="webhook-attempts" style="text-align: center;">${log.attempts}</td>
+                        <td data-test-id="webhook-last-attempt" style="color: #64748b;">${log.lastAttemptAt ? new Date(log.lastAttemptAt).toLocaleTimeString() : '-'}</td>
+                        <td data-test-id="webhook-response-code" class="code-cell">${log.responseCode || '-'}</td>
+                        <td>
+                            ${log.status === 'failed' ? 
+                                `<button data-test-id="retry-webhook-button" class="btn btn-retry" onclick="retryWebhook('${log.id}')"><i class="fa-solid fa-arrow-rotate-right"></i> Retry</button>` 
+                                : ''}
+                        </td>
+                    `;
+                    tbody.appendChild(tr);
+                });
+            } catch (e) { 
+                console.error("Failed to load logs", e); 
+            }
+        }
+
+        async function retryWebhook(id) {
+            const btn = document.querySelector(`button[onclick="retryWebhook('${id}')"]`);
+            if(btn) { btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i>'; btn.disabled = true; }
+
+            try {
+                await fetch(`http://localhost:8000/api/v1/webhooks/${id}/retry`, {
+                    method: 'POST',
+                    headers: { 'X-Api-Key': 'key_test_abc123', 'X-Api-Secret': 'secret_test_xyz789' }
+                });
+                setTimeout(loadLogs, 1000);
+            } catch (e) {
+                console.error(e);
+                alert("Failed to retry webhook");
+            }
+        }
+
+        // Initial Load
+        loadLogs();
+        setInterval(loadLogs, 5000); // Auto refresh every 5s
+    </script>
+</body>
+</html>

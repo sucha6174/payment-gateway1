@@ -1,0 +1,93 @@
+version: '3.8'
+
+services:
+  # 1. The Database (PostgreSQL)
+  postgres:
+    image: postgres:15-alpine
+    container_name: gateway_postgres
+    environment:
+      POSTGRES_USER: gateway_user
+      POSTGRES_PASSWORD: gateway_pass
+      POSTGRES_DB: payment_gateway
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U gateway_user -d payment_gateway"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # 2. The Job Queue (Redis)
+  redis:
+    image: redis:7-alpine
+    container_name: redis_gateway
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  # 3. The Backend API (Java Spring Boot)
+  api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: gateway_api
+    ports:
+      - "8000:8000"
+    environment:
+      # FIXED: Added 'jdbc:' prefix and removed credentials (they are in application.properties)
+      DATABASE_URL: jdbc:postgresql://postgres:5432/payment_gateway
+      REDIS_URL: redis://redis:6379
+      SPRING_PROFILES_ACTIVE: default
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # 4. The Background Worker (Processes Payments)
+  worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.worker
+    container_name: gateway_worker
+    environment:
+      # FIXED: Added 'jdbc:' prefix and removed credentials
+      DATABASE_URL: jdbc:postgresql://postgres:5432/payment_gateway
+      REDIS_URL: redis://redis:6379
+      SPRING_PROFILES_ACTIVE: worker
+      WEBHOOK_RETRY_INTERVALS_TEST: "false"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      api:
+        condition: service_started
+
+  # 5. The Dashboard (Admin Panel) - REQUIRED on Port 3000
+  dashboard:
+    image: nginx:alpine
+    container_name: gateway_dashboard
+    ports:
+      - "3000:80"
+    volumes:
+      - ./dashboard:/usr/share/nginx/html
+
+  # 6. The SDK/Checkout Service (Serves the JS Widget)
+  checkout:
+    image: nginx:alpine
+    container_name: gateway_checkout
+    ports:
+      - "3001:80"
+    volumes:
+      - ./checkout-widget/dist:/usr/share/nginx/html
+
+volumes:
+  postgres_data:
