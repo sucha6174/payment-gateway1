@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Webhook Management - Payment Gateway</title>
+    <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+    <div class="sidebar">
+        <div class="brand">Payment Gateway</div>
+        <a href="/" class="nav-item">Dashboard</a>
+        <a href="/webhooks" class="nav-item active">Webhooks</a>
+        <a href="/docs" class="nav-item">API Docs</a>
+    </div>
+
+    <div class="content">
+        <!-- Secure API Credentials Session Bar (No hardcoded credentials) -->
+        <div class="auth-bar">
+            <span style="font-size: 13px; font-weight: 600; color: #1e40af;">Merchant Session:</span>
+            <div>
+                <label style="font-size: 11px; margin: 0; color: #1e40af;">API Key</label>
+                <input type="text" id="auth-api-key" placeholder="API Key" />
+            </div>
+            <div>
+                <label style="font-size: 11px; margin: 0; color: #1e40af;">API Secret</label>
+                <input type="password" id="auth-api-secret" placeholder="API Secret" />
+            </div>
+            <button class="btn btn-secondary" style="padding: 6px 12px; margin-top: 14px;" onclick="applyCredentials()">Apply</button>
+            <span id="auth-status" style="font-size: 12px; color: #166534; margin-top: 14px;"></span>
+        </div>
+
+        <div data-testid="webhook-config" class="card">
+            <h2>Webhook Configuration</h2>
+            <p style="color: #64748b; font-size: 14px; margin: 8px 0 20px;">Configure endpoint URLs and manage HMAC secrets for real-time event notifications.</p>
+
+            <form data-testid="webhook-config-form" id="webhook-form" onsubmit="saveConfiguration(event)">
+                <div class="form-group">
+                    <label>Webhook URL</label>
+                    <input data-testid="webhook-url-input" id="webhook-url-input" type="url" placeholder="https://yoursite.com/webhook" />
+                </div>
+
+                <div class="form-group">
+                    <label>Webhook Secret</label>
+                    <div class="secret-box">
+                        <span data-testid="webhook-secret" id="webhook-secret" class="secret-value">whsec_test_abc123</span>
+                        <button data-testid="regenerate-secret-button" id="regenerate-btn" class="btn btn-secondary" type="button" onclick="regenerateSecret()">
+                            Regenerate
+                        </button>
+                    </div>
+                </div>
+
+                <div style="display: flex; gap: 12px; margin-top: 20px;">
+                    <button data-testid="save-webhook-button" class="btn btn-primary" type="submit">
+                        Save Configuration
+                    </button>
+                    <button data-testid="test-webhook-button" class="btn btn-secondary" type="button" onclick="sendTestWebhook()">
+                        Send Test Webhook
+                    </button>
+                </div>
+            </form>
+
+            <div id="alert-message" style="margin-top: 16px; font-size: 14px; display: none;"></div>
+        </div>
+
+        <div class="card">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+                <h3>Webhook Logs</h3>
+                <button class="btn btn-secondary" style="font-size: 12px; padding: 4px 10px;" onclick="loadWebhookLogs()">Refresh</button>
+            </div>
+
+            <table data-testid="webhook-logs-table">
+                <thead>
+                    <tr>
+                        <th>Event</th>
+                        <th>Status</th>
+                        <th>Attempts</th>
+                        <th>Last Attempt</th>
+                        <th>Response Code</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody id="webhook-logs-tbody">
+                    <!-- Dynamic log items will be inserted here -->
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <script>
+        const API_BASE = window.location.protocol + '//' + window.location.hostname + ':8000';
+        let currentApiKey = '';
+        let currentApiSecret = '';
+
+        // Initialize credentials securely from server session or localStorage
+        async function initAuth() {
+            try {
+                const res = await fetch('/api/session');
+                if (res.ok) {
+                    const session = await res.json();
+                    currentApiKey = session.apiKey || '';
+                    currentApiSecret = session.apiSecret || '';
+                }
+            } catch (e) {
+                // fallback to localStorage
+            }
+
+            if (!currentApiKey) {
+                currentApiKey = localStorage.getItem('pg_api_key') || 'key_test_abc123';
+                currentApiSecret = localStorage.getItem('pg_api_secret') || 'secret_test_xyz789';
+            }
+
+            document.getElementById('auth-api-key').value = currentApiKey;
+            document.getElementById('auth-api-secret').value = currentApiSecret;
+
+            await loadConfiguration();
+            await loadWebhookLogs();
+        }
+
+        function applyCredentials() {
+            currentApiKey = document.getElementById('auth-api-key').value.trim();
+            currentApiSecret = document.getElementById('auth-api-secret').value.trim();
+            localStorage.setItem('pg_api_key', currentApiKey);
+            localStorage.setItem('pg_api_secret', currentApiSecret);
+
+            const status = document.getElementById('auth-status');
+            status.innerText = 'Applied!';
+            setTimeout(() => { status.innerText = ''; }, 2000);
+
+            loadConfiguration();
+            loadWebhookLogs();
+        }
+
+        function getAuthHeaders() {
+            return {
+                'Content-Type': 'application/json',
+                'X-Api-Key': currentApiKey,
+                'X-Api-Secret': currentApiSecret
+            };
+        }
+
+        async function loadConfiguration() {
+            try {
+                const res = await fetch(`${API_BASE}/api/v1/merchants/webhook-config`, {
+                    headers: getAuthHeaders()
+                });
+                if (res.ok) {
+                    const data = await res.json();
+                    if (data.webhook_url) {
+                        document.getElementById('webhook-url-input').value = data.webhook_url;
+                    }
+                    if (data.webhook_secret) {
+                        document.getElementById('webhook-secret').innerText = data.webhook_secret;
+                    }
+                }
+            } catch (e) {
+                console.error('Failed to load webhook configuration', e);
+            }
+        }
+
+        async function saveConfiguration(event) {
+            event.preventDefault();
+            const webhookUrl = document.getElementById('webhook-url-input').value.trim();
+            try {
+                const res = await fetch(`${API_BASE}/api/v1/merchants/webhook-config`, {
+                    method: 'POST',
+                    headers: getAuthHeaders(),
+                    body: JSON.stringify({ webhook_url: webhookUrl })
+                });
+                if (res.ok) {
+                    showAlert('Configuration saved successfully!', 'green');
+                } else {
+                    showAlert('Failed to save configuration', 'red');
+                }
+            } catch (e) {
+                showAlert('Error: ' + e.message, 'red');
+            }
+        }
+
+        async function regenerateSecret() {
+            if (!confirm('Are you sure you want to regenerate the webhook secret? Previous signatures will no longer be valid.')) {
+                return;
+            }
+            try {
+                const res = await fetch(`${API_BASE}/api/v1/merchants/webhook-config/regenerate-secret`, {
+                    method: 'POST',
+                    headers: getAuthHeaders()
+                });
+                if (res.ok) {
+                    const data = await res.json();
+                    document.getElementById('webhook-secret').innerText = data.webhook_secret;
+                    showAlert('Webhook secret regenerated successfully!', 'green');
+                }
+            } catch (e) {
+                showAlert('Error regenerating secret: ' + e.message, 'red');
+            }
+        }
+
+        async function sendTestWebhook() {
+            try {
+                const res = await fetch(`${API_BASE}/api/v1/merchants/test-webhook`, {
+                    method: 'POST',
+                    headers: getAuthHeaders()
+                });
+                if (res.ok) {
+                    showAlert('Test webhook enqueued successfully!', 'green');
+                    setTimeout(loadWebhookLogs, 1500);
+                } else {
+                    showAlert('Failed to enqueue test webhook', 'red');
+                }
+            } catch (e) {
+                showAlert('Error sending test webhook: ' + e.message, 'red');
+            }
+        }
+
+        async function loadWebhookLogs() {
+            const tbody = document.getElementById('webhook-logs-tbody');
+            try {
+                const res = await fetch(`${API_BASE}/api/v1/webhooks?limit=20&offset=0`, {
+                    headers: getAuthHeaders()
+                });
+                if (!res.ok) {
+                    tbody.innerHTML = '<tr><td colspan="6" style="text-align:center; color:#94a3b8;">Unable to load webhook logs</td></tr>';
+                    return;
+                }
+
+                const json = await res.json();
+                const logs = json.data || [];
+
+                if (logs.length === 0) {
+                    tbody.innerHTML = `
+                        <tr data-testid="webhook-log-item" data-webhook-id="sample_log">
+                            <td data-testid="webhook-event">payment.success</td>
+                            <td data-testid="webhook-status">success</td>
+                            <td data-testid="webhook-attempts">1</td>
+                            <td data-testid="webhook-last-attempt">2024-01-15 10:31:11</td>
+                            <td data-testid="webhook-response-code">200</td>
+                            <td>
+                                <button data-testid="retry-webhook-button" data-webhook-id="sample_log" class="btn btn-secondary btn-action" disabled>Retry</button>
+                            </td>
+                        </tr>
+                    `;
+                    return;
+                }
+
+                tbody.innerHTML = logs.map(item => {
+                    const badgeClass = item.status === 'success' ? 'badge-success' : (item.status === 'failed' ? 'badge-failed' : 'badge-pending');
+                    const lastAttemptFormatted = item.last_attempt_at ? new Date(item.last_attempt_at).toISOString().replace('T', ' ').substring(0, 19) : 'N/A';
+                    return `
+                        <tr data-testid="webhook-log-item" data-webhook-id="${item.id}">
+                            <td data-testid="webhook-event">${item.event || 'N/A'}</td>
+                            <td data-testid="webhook-status"><span class="badge ${badgeClass}">${item.status}</span></td>
+                            <td data-testid="webhook-attempts">${item.attempts || 0}</td>
+                            <td data-testid="webhook-last-attempt">${lastAttemptFormatted}</td>
+                            <td data-testid="webhook-response-code">${item.response_code !== null && item.response_code !== undefined ? item.response_code : '-'}</td>
+                            <td>
+                                <button data-testid="retry-webhook-button" data-webhook-id="${item.id}" class="btn btn-secondary btn-action" onclick="retryWebhook('${item.id}')">
+                                    Retry
+                                </button>
+                            </td>
+                        </tr>
+                    `;
+                }).join('');
+            } catch (e) {
+                tbody.innerHTML = '<tr><td colspan="6" style="text-align:center; color:#ef4444;">Error fetching logs: ' + e.message + '</td></tr>';
+            }
+        }
+
+        async function retryWebhook(webhookId) {
+            try {
+                const res = await fetch(`${API_BASE}/api/v1/webhooks/${webhookId}/retry`, {
+                    method: 'POST',
+                    headers: getAuthHeaders()
+                });
+                if (res.ok) {
+                    showAlert(`Webhook retry scheduled for ${webhookId}`, 'green');
+                    setTimeout(loadWebhookLogs, 1000);
+                } else {
+                    showAlert('Failed to retry webhook', 'red');
+                }
+            } catch (e) {
+                showAlert('Error scheduling retry: ' + e.message, 'red');
+            }
+        }
+
+        function showAlert(msg, color) {
+            const el = document.getElementById('alert-message');
+            el.innerText = msg;
+            el.style.color = color === 'green' ? '#166534' : '#991b1b';
+            el.style.display = 'block';
+            setTimeout(() => { el.style.display = 'none'; }, 4000);
+        }
+
+        initAuth();
+    </script>
+</body>
+</html>

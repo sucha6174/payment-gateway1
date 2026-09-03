@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Secure Checkout</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+        body { background: #f8fafc; color: #1e293b; padding: 24px; }
+        .checkout-card { max-width: 420px; margin: 0 auto; background: white; border-radius: 12px; padding: 24px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05); }
+        .header { text-align: center; margin-bottom: 20px; padding-bottom: 16px; border-bottom: 1px solid #e2e8f0; }
+        .merchant-title { font-size: 14px; font-weight: 500; color: #64748b; margin-bottom: 4px; }
+        .amount-display { font-size: 30px; font-weight: 700; color: #0f172a; }
+        .tabs { display: flex; gap: 8px; margin-bottom: 20px; border-bottom: 1px solid #e2e8f0; padding-bottom: 8px; }
+        .tab { flex: 1; padding: 8px 12px; font-size: 14px; font-weight: 600; text-align: center; border: 1px solid #cbd5e1; border-radius: 6px; cursor: pointer; background: #f8fafc; color: #475569; }
+        .tab.active { background: #2563eb; color: white; border-color: #2563eb; }
+        .form-group { margin-bottom: 16px; }
+        label { display: block; font-size: 13px; font-weight: 500; color: #334155; margin-bottom: 6px; }
+        input { width: 100%; padding: 10px 12px; font-size: 14px; border: 1px solid #cbd5e1; border-radius: 6px; outline: none; }
+        input:focus { border-color: #2563eb; ring: 2px solid #93c5fd; }
+        .row { display: flex; gap: 12px; }
+        .btn-pay { width: 100%; padding: 12px; background: #2563eb; color: white; border: none; border-radius: 6px; font-size: 15px; font-weight: 600; cursor: pointer; transition: background 0.2s; margin-top: 8px; }
+        .btn-pay:hover { background: #1d4ed8; }
+        .btn-pay:disabled { background: #94a3b8; cursor: not-allowed; }
+        .status-box { margin-top: 16px; padding: 12px; border-radius: 6px; font-size: 13px; text-align: center; display: none; }
+        .status-box.error { display: block; background: #fef2f2; color: #991b1b; border: 1px solid #fecaca; }
+        .status-box.success { display: block; background: #f0fdf4; color: #166534; border: 1px solid #bbf7d0; }
+    </style>
+</head>
+<body>
+    <div class="checkout-card">
+        <div class="header">
+            <div class="merchant-title">Payment Request</div>
+            <div class="amount-display" id="amount-text">₹500.00</div>
+            <div style="font-size: 12px; color: #94a3b8; margin-top: 4px;" id="order-id-text">Order: ...</div>
+        </div>
+
+        <div class="tabs">
+            <div class="tab active" id="tab-upi" onclick="selectMethod('upi')">UPI</div>
+            <div class="tab" id="tab-card" onclick="selectMethod('card')">Card</div>
+        </div>
+
+        <div id="upi-section">
+            <div class="form-group">
+                <label for="vpa-input">Virtual Payment Address (VPA)</label>
+                <input type="text" id="vpa-input" placeholder="user@okhdfcbank" value="customer@upi" />
+            </div>
+        </div>
+
+        <div id="card-section" style="display: none;">
+            <div class="form-group">
+                <label for="card-number">Card Number</label>
+                <input type="text" id="card-number" placeholder="4111 2222 3333 4444" value="4111222233334444" />
+            </div>
+            <div class="row">
+                <div class="form-group" style="flex: 1;">
+                    <label for="exp-month">Month</label>
+                    <input type="number" id="exp-month" placeholder="12" value="12" min="1" max="12" />
+                </div>
+                <div class="form-group" style="flex: 1;">
+                    <label for="exp-year">Year</label>
+                    <input type="number" id="exp-year" placeholder="2028" value="2028" />
+                </div>
+            </div>
+            <div class="form-group">
+                <label for="card-holder">Cardholder Name</label>
+                <input type="text" id="card-holder" placeholder="John Doe" value="John Doe" />
+            </div>
+        </div>
+
+        <button class="btn-pay" id="pay-btn" onclick="submitPayment()">Pay Now</button>
+        <div class="status-box" id="status-box"></div>
+    </div>
+
+    <script>
+        const params = new URLSearchParams(window.location.search);
+        const orderId = params.get('order_id');
+        const apiKey = params.get('key') || 'key_test_abc123';
+        const apiBase = window.location.protocol + '//' + window.location.hostname + ':8000';
+
+        let currentMethod = 'upi';
+        let orderAmount = 50000;
+
+        document.getElementById('order-id-text').innerText = 'Order: ' + (orderId || 'N/A');
+
+        function selectMethod(method) {
+            currentMethod = method;
+            if (method === 'upi') {
+                document.getElementById('tab-upi').classList.add('active');
+                document.getElementById('tab-card').classList.remove('active');
+                document.getElementById('upi-section').style.display = 'block';
+                document.getElementById('card-section').style.display = 'none';
+            } else {
+                document.getElementById('tab-card').classList.add('active');
+                document.getElementById('tab-upi').classList.remove('active');
+                document.getElementById('card-section').style.display = 'block';
+                document.getElementById('upi-section').style.display = 'none';
+            }
+        }
+
+        async function fetchOrderDetails() {
+            if (!orderId) return;
+            try {
+                const res = await fetch(`${apiBase}/api/v1/orders/${encodeURIComponent(orderId)}`, {
+                    headers: { 'X-Api-Key': apiKey }
+                });
+                if (res.ok) {
+                    const data = await res.json();
+                    orderAmount = data.amount;
+                    document.getElementById('amount-text').innerText = `₹${(data.amount / 100).toFixed(2)}`;
+                }
+            } catch (err) {
+                console.error('Failed to fetch order details:', err);
+            }
+        }
+        fetchOrderDetails();
+
+        async function submitPayment() {
+            const payBtn = document.getElementById('pay-btn');
+            const statusBox = document.getElementById('status-box');
+            payBtn.disabled = true;
+            payBtn.innerText = 'Processing...';
+            statusBox.className = 'status-box';
+            statusBox.innerText = '';
+
+            const payload = {
+                order_id: orderId,
+                method: currentMethod
+            };
+
+            if (currentMethod === 'upi') {
+                payload.vpa = document.getElementById('vpa-input').value.trim();
+            } else {
+                payload.card_number = document.getElementById('card-number').value.trim();
+                payload.card_exp_month = parseInt(document.getElementById('exp-month').value.trim(), 10);
+                payload.card_exp_year = parseInt(document.getElementById('exp-year').value.trim(), 10);
+                payload.card_holder = document.getElementById('card-holder').value.trim();
+            }
+
+            try {
+                const res = await fetch(`${apiBase}/api/v1/payments`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-Api-Key': apiKey
+                    },
+                    body: JSON.stringify(payload)
+                });
+
+                const data = await res.json();
+
+                if (res.status === 201) {
+                    statusBox.className = 'status-box success';
+                    statusBox.innerText = 'Payment initiated! Payment ID: ' + data.id;
+
+                    // Send postMessage to parent SDK
+                    window.parent.postMessage({
+                        type: 'payment_success',
+                        data: {
+                            paymentId: data.id,
+                            orderId: data.order_id,
+                            amount: data.amount,
+                            status: data.status
+                        }
+                    }, '*');
+                } else {
+                    const errorMsg = (data.error && data.error.description) || 'Payment failed to initiate';
+                    statusBox.className = 'status-box error';
+                    statusBox.innerText = errorMsg;
+
+                    window.parent.postMessage({
+                        type: 'payment_failed',
+                        data: data.error || { code: 'PAYMENT_FAILED', description: errorMsg }
+                    }, '*');
+                    payBtn.disabled = false;
+                    payBtn.innerText = 'Pay Now';
+                }
+            } catch (err) {
+                statusBox.className = 'status-box error';
+                statusBox.innerText = 'Network error: ' + err.message;
+
+                window.parent.postMessage({
+                    type: 'payment_failed',
+                    data: { code: 'NETWORK_ERROR', description: err.message }
+                }, '*');
+                payBtn.disabled = false;
+                payBtn.innerText = 'Pay Now';
+            }
+        }
+    </script>
+</body>
+</html>

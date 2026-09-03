@@ -1,23 +1,29 @@
-version: 1.0
-name: Payment Gateway Async
-description: Async payment gateway with Redis, Workers, and Webhooks
+version: "1.0"
+metadata:
+  candidate_name: "KALARI SRISUCHA"
+  repository_url: "https://github.com/sucha6174/payment-gateway1"
+  submission_date: "2026-09-03"
 
-build:
-  # Installs dependencies and builds the project
-  - cd backend && mvn clean package -DskipTests
+setup:
+  - name: "Check Docker Daemon"
+    command: "docker --version && docker compose version"
 
-run:
-  # Starts all services using Docker Compose
-  - docker-compose up -d --build
+start:
+  - name: "Start Gateway Services"
+    command: "docker compose up -d --build"
+  - name: "Wait for API Health"
+    command: "docker compose ps"
 
 test:
-  # Health check to ensure API is up
-  - curl --fail http://localhost:8000/api/v1/test/jobs/status || exit 1
-  # Check if Redis is up
-  - docker exec redis_gateway redis-cli ping || exit 1
+  - name: "Run Backend Unit Tests"
+    command: "python tests/run_tests.py unit"
 
 verify:
-  # Verify Worker is running
-  - docker ps | grep gateway_worker || exit 1
-  # Verify SDK is served
-  - curl --fail http://localhost:3001/checkout.js || exit 1
+  - name: "Job Queue Status Check"
+    command: "curl -s -f http://localhost:8000/api/v1/test/jobs/status"
+  - name: "End-to-End Workflow Verification"
+    command: "python tests/e2e_verification.py"
+
+shutdown:
+  - name: "Stop Gateway Services"
+    command: "docker compose down -v"

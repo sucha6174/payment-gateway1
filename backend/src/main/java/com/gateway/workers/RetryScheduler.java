@@ -3,39 +3,53 @@ package com.gateway.workers;
 import com.gateway.jobs.DeliverWebhookJob;
 import com.gateway.models.WebhookLog;
 import com.gateway.repositories.WebhookLogRepository;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.context.annotation.Profile;
-import org.springframework.data.redis.core.RedisTemplate;
+import com.gateway.services.JobQueueService;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
-import java.time.LocalDateTime;
+import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.List;
 
 @Component
-@Profile("worker")
 public class RetryScheduler {
 
-    @Autowired
-    private WebhookLogRepository webhookLogRepository;
+    private static final Logger log = LoggerFactory.getLogger(RetryScheduler.class);
 
-    @Autowired
-    private RedisTemplate<String, Object> redisTemplate;
+    private final WebhookLogRepository webhookLogRepository;
+    private final JobQueueService jobQueueService;
 
-    // Run every 10 seconds to check for due retries
-    @Scheduled(fixedRate = 10000)
-    public void requeuePendingWebhooks() {
-        List<WebhookLog> logsToRetry = webhookLogRepository.findByStatusAndNextRetryAtBefore("pending", LocalDateTime.now());
+    public RetryScheduler(WebhookLogRepository webhookLogRepository, JobQueueService jobQueueService) {
+        this.webhookLogRepository = webhookLogRepository;
+        this.jobQueueService = jobQueueService;
+    }
 
-        for (WebhookLog log : logsToRetry) {
-            // Push back to Redis
-            redisTemplate.opsForList().leftPush("queue:webhooks", new DeliverWebhookJob(log.getId()));
-            
-            // Update nextRetryAt to null so we don't pick it up again immediately
-            log.setNextRetryAt(null); 
-            webhookLogRepository.save(log);
-            
-            System.out.println("Re-queued webhook: " + log.getId());
+    @Scheduled(fixedDelay = 2000)
+    public void processScheduledRetries() {
+        try {
+            Instant now = Instant.now();
+            List<WebhookLog> pendingLogs = webhookLogRepository.findByStatusAndNextRetryAtBefore("pending", now);
+            if (pendingLogs != null && !pendingLogs.isEmpty()) {
+                log.info("Found {} pending webhooks due for retry", pendingLogs.size());
+                for (WebhookLog logEntry : pendingLogs) {
+                    // Temporarily postpone next_retry_at to avoid immediate duplicate scheduling
+                    logEntry.setNextRetryAt(now.plus(30, ChronoUnit.SECONDS));
+                    webhookLogRepository.save(logEntry);
+
+                    DeliverWebhookJob job = new DeliverWebhookJob(
+                            logEntry.getMerchantId(),
+                            logEntry.getId(),
+                            logEntry.getEvent(),
+                            logEntry.getPayload()
+                    );
+                    jobQueueService.enqueueWebhook(job);
+                }
+            }
+        } catch (Exception e) {
+            log.error("Error running RetryScheduler: {}", e.getMessage(), e);
         }
     }
 }

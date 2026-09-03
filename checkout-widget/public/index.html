@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Merchant Store Demo - Payment Gateway SDK</title>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f1f5f9; padding: 40px 20px; display: flex; justify-content: center; }
+        .store-card { background: white; max-width: 480px; width: 100%; border-radius: 16px; padding: 32px; box-shadow: 0 10px 15px -3px rgba(0,0,0,0.1); }
+        h1 { font-size: 22px; color: #0f172a; margin-bottom: 8px; }
+        p { color: #64748b; font-size: 14px; margin-bottom: 24px; line-height: 1.5; }
+        .product-summary { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 16px; margin-bottom: 24px; display: flex; justify-content: space-between; align-items: center; }
+        .item-name { font-weight: 600; color: #1e293b; }
+        .item-price { font-weight: 700; color: #2563eb; font-size: 18px; }
+        .btn-pay { width: 100%; background: #2563eb; color: white; border: none; padding: 14px; border-radius: 8px; font-size: 16px; font-weight: 600; cursor: pointer; transition: background 0.2s; }
+        .btn-pay:hover { background: #1d4ed8; }
+        .btn-close-demo { width: 100%; background: #e2e8f0; color: #334155; border: none; padding: 10px; border-radius: 8px; font-size: 14px; font-weight: 500; cursor: pointer; margin-top: 8px; }
+        .log-box { margin-top: 24px; background: #0f172a; color: #38bdf8; font-family: monospace; font-size: 12px; padding: 16px; border-radius: 8px; max-height: 200px; overflow-y: auto; }
+    </style>
+</head>
+<body>
+    <div class="store-card">
+        <h1>Acme Store Demo</h1>
+        <p>This demo verifies embeddable JavaScript SDK functionality (modal creation, iframe communication, and callback handling).</p>
+
+        <div class="product-summary">
+            <div>
+                <div class="item-name">Premium Developer Course</div>
+                <div style="font-size: 12px; color: #64748b;">Annual subscription</div>
+            </div>
+            <div class="item-price">₹500.00</div>
+        </div>
+
+        <button id="pay-button" class="btn-pay">Pay with Payment Gateway</button>
+        <button id="programmatic-close-demo" class="btn-close-demo" style="display:none;">Test SDK close() Method</button>
+
+        <div class="log-box" id="sdk-logs">SDK Event Logs will appear here...</div>
+    </div>
+
+    <!-- Include bundled SDK -->
+    <script src="/checkout.js"></script>
+    <script>
+        const logs = document.getElementById('sdk-logs');
+        function logMsg(msg) {
+            const time = new Date().toLocaleTimeString();
+            logs.innerHTML += `<div>[${time}] ${msg}</div>`;
+            logs.scrollTop = logs.scrollHeight;
+        }
+
+        let currentCheckout = null;
+
+        document.getElementById('pay-button').addEventListener('click', async function() {
+            logMsg('Creating order via API...');
+
+            let orderId = 'order_demo_' + Math.random().toString(36).substring(2, 10);
+            try {
+                const res = await fetch('http://localhost:8000/api/v1/orders', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-Api-Key': 'key_test_abc123',
+                        'X-Api-Secret': 'secret_test_xyz789'
+                    },
+                    body: JSON.stringify({
+                        amount: 50000,
+                        currency: 'INR',
+                        receipt: 'rcpt_' + Date.now()
+                    })
+                });
+                if (res.ok) {
+                    const orderData = await res.json();
+                    orderId = orderData.id;
+                    logMsg(`Created Order: ${orderId}`);
+                }
+            } catch (e) {
+                logMsg('Using fallback demo order ID: ' + orderId);
+            }
+
+            logMsg('Initializing PaymentGateway instance...');
+            currentCheckout = new PaymentGateway({
+                key: 'key_test_abc123',
+                orderId: orderId,
+                onSuccess: function(response) {
+                    logMsg('✅ onSuccess callback triggered! Payment ID: ' + (response.paymentId || JSON.stringify(response)));
+                },
+                onFailure: function(error) {
+                    logMsg('❌ onFailure callback triggered: ' + JSON.stringify(error));
+                },
+                onClose: function() {
+                    logMsg('ℹ️ onClose callback triggered: Modal closed by user or programmatically.');
+                }
+            });
+
+            currentCheckout.open();
+            logMsg('checkout.open() called. Modal visible.');
+        });
+    </script>
+</body>
+</html>

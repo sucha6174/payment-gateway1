@@ -1,15 +1,21 @@
 package com.gateway.repositories;
 
 import com.gateway.models.WebhookLog;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
-import java.time.LocalDateTime;
+import org.springframework.stereotype.Repository;
+
+import java.time.Instant;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 
+@Repository
 public interface WebhookLogRepository extends JpaRepository<WebhookLog, UUID> {
-    // Find logs that are 'pending' and the retry time has passed
-    List<WebhookLog> findByStatusAndNextRetryAtBefore(String status, LocalDateTime now);
-    
-    // Find all logs for a specific merchant (for the dashboard)
+    Page<WebhookLog> findByMerchantIdOrderByCreatedAtDesc(UUID merchantId, Pageable pageable);
     List<WebhookLog> findByMerchantIdOrderByCreatedAtDesc(UUID merchantId);
+    Optional<WebhookLog> findByIdAndMerchantId(UUID id, UUID merchantId);
+    long countByMerchantId(UUID merchantId);
+    List<WebhookLog> findByStatusAndNextRetryAtBefore(String status, Instant nextRetryAt);
 }

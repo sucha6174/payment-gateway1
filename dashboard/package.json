@@ -1,0 +1,12 @@
+{
+  "name": "gateway-dashboard",
+  "version": "1.0.0",
+  "description": "Merchant Dashboard for Payment Gateway",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2"
+  }
+}

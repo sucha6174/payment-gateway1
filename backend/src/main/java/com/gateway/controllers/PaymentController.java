@@ -1,125 +1,282 @@
 package com.gateway.controllers;
 
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.gateway.jobs.ProcessPaymentJob;
 import com.gateway.models.IdempotencyKey;
 import com.gateway.models.Merchant;
+import com.gateway.models.Order;
 import com.gateway.models.Payment;
 import com.gateway.repositories.IdempotencyKeyRepository;
-import com.gateway.repositories.MerchantRepository;
+import com.gateway.repositories.OrderRepository;
 import com.gateway.repositories.PaymentRepository;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.data.redis.core.RedisTemplate;
+import com.gateway.services.AuthService;
+import com.gateway.services.JobQueueService;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.*;
-import org.json.JSONObject;
 
-import java.time.LocalDateTime;
+import java.security.SecureRandom;
+import java.time.Instant;
+import java.util.List;
 import java.util.Map;
-import java.util.UUID;
+import java.util.Optional;
 
 @RestController
 @RequestMapping("/api/v1/payments")
-@CrossOrigin // Allow frontend to call this
+@CrossOrigin(origins = "*")
 public class PaymentController {
 
-    @Autowired private PaymentRepository paymentRepository;
-    @Autowired private MerchantRepository merchantRepository;
-    @Autowired private IdempotencyKeyRepository idempotencyKeyRepository;
-    @Autowired private RedisTemplate<String, Object> redisTemplate;
+    private final PaymentRepository paymentRepository;
+    private final OrderRepository orderRepository;
+    private final IdempotencyKeyRepository idempotencyKeyRepository;
+    private final AuthService authService;
+    private final JobQueueService jobQueueService;
+    private final ObjectMapper objectMapper;
+    private static final String ALPHANUMERIC = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+    private final SecureRandom random = new SecureRandom();
 
-    // Helper: Validate API Keys
-    private Merchant validateAuth(String apiKey, String apiSecret) {
-        Merchant merchant = merchantRepository.findByApiKey(apiKey).orElse(null);
-        if (merchant != null && merchant.getApiSecret().equals(apiSecret)) {
-            return merchant;
-        }
-        return null;
+    public PaymentController(PaymentRepository paymentRepository,
+                             OrderRepository orderRepository,
+                             IdempotencyKeyRepository idempotencyKeyRepository,
+                             AuthService authService,
+                             JobQueueService jobQueueService,
+                             ObjectMapper objectMapper) {
+        this.paymentRepository = paymentRepository;
+        this.orderRepository = orderRepository;
+        this.idempotencyKeyRepository = idempotencyKeyRepository;
+        this.authService = authService;
+        this.jobQueueService = jobQueueService;
+        this.objectMapper = objectMapper;
     }
 
     @PostMapping
+    @Transactional
     public ResponseEntity<?> createPayment(
-            @RequestHeader("X-Api-Key") String apiKey,
-            @RequestHeader("X-Api-Secret") String apiSecret,
-            @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
-            @RequestBody Map<String, Object> request) {
+            @RequestHeader(value = "X-Api-Key", required = false) String apiKey,
+            @RequestHeader(value = "X-Api-Secret", required = false) String apiSecret,
+            @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKeyHeader,
+            @RequestBody Map<String, Object> body) {
 
-        // 1. Authentication
-        Merchant merchant = validateAuth(apiKey, apiSecret);
-        if (merchant == null) return ResponseEntity.status(401).body("Invalid Credentials");
+        Merchant merchant = null;
+        if (apiKey != null && apiSecret != null) {
+            merchant = authService.authenticate(apiKey, apiSecret);
+        } else if (apiKey != null) {
+            merchant = authService.authenticateKeyOnly(apiKey);
+        }
 
-        // 2. Idempotency Check (Prevent duplicate charges)
-        if (idempotencyKey != null) {
-            IdempotencyKey keyRecord = idempotencyKeyRepository.findById(new IdempotencyKey.IdempotencyKeyId(idempotencyKey, merchant.getId())).orElse(null);
-            if (keyRecord != null) {
-                if (keyRecord.getExpiresAt().isAfter(LocalDateTime.now())) {
-                    // Return Cached Response
-                    return ResponseEntity.status(201).body(keyRecord.getResponse());
+        if (merchant == null) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(Map.of(
+                    "error", Map.of("code", "AUTHENTICATION_ERROR", "description", "Invalid API credentials")
+            ));
+        }
+
+        // Idempotency Key Handling
+        if (idempotencyKeyHeader != null && !idempotencyKeyHeader.trim().isEmpty()) {
+            String trimmedKey = idempotencyKeyHeader.trim();
+            Optional<IdempotencyKey> existingKeyOpt = idempotencyKeyRepository.findByKeyAndMerchantId(trimmedKey, merchant.getId());
+            if (existingKeyOpt.isPresent()) {
+                IdempotencyKey existingKey = existingKeyOpt.get();
+                if (existingKey.getExpiresAt().isAfter(Instant.now())) {
+                    // Return cached response
+                    try {
+                        Map<String, Object> cachedResponse = objectMapper.readValue(
+                                existingKey.getResponse(),
+                                new TypeReference<Map<String, Object>>() {}
+                        );
+                        return ResponseEntity.status(HttpStatus.CREATED).body(cachedResponse);
+                    } catch (Exception e) {
+                        // If parsing fails, proceed with processing
+                    }
                 } else {
-                    idempotencyKeyRepository.delete(keyRecord); // Expired, delete and retry
+                    idempotencyKeyRepository.deleteByKeyAndMerchantId(trimmedKey, merchant.getId());
                 }
             }
         }
 
-        // 3. Create Payment Record
-        Payment payment = new Payment();
-        payment.setId("pay_" + UUID.randomUUID().toString().replace("-", "").substring(0, 15));
-        payment.setMerchant(merchant);
-        payment.setOrderId((String) request.get("order_id"));
-        payment.setAmount((Integer) request.get("amount"));
-        payment.setCurrency((String) request.get("currency"));
-        payment.setMethod((String) request.get("method"));
-        payment.setVpa((String) request.get("vpa"));
-        payment.setStatus("pending"); // Initial state
-        payment.setCaptured(false);
-        
-        paymentRepository.save(payment);
-
-        // 4. Send to Worker (Redis)
-        redisTemplate.opsForList().leftPush("queue:payments", new ProcessPaymentJob(payment.getId()));
-
-        // 5. Construct Response
-        JSONObject response = new JSONObject();
-        response.put("id", payment.getId());
-        response.put("order_id", payment.getOrderId());
-        response.put("amount", payment.getAmount());
-        response.put("status", payment.getStatus());
-        response.put("created_at", payment.getCreatedAt().toString());
-
-        // 6. Save Idempotency Key
-        if (idempotencyKey != null) {
-            IdempotencyKey newKey = new IdempotencyKey();
-            newKey.setKey(idempotencyKey);
-            newKey.setMerchantId(merchant.getId());
-            newKey.setResponse(response.toString());
-            newKey.setCreatedAt(LocalDateTime.now());
-            newKey.setExpiresAt(LocalDateTime.now().plusHours(24));
-            idempotencyKeyRepository.save(newKey);
+        // Validate Order
+        if (!body.containsKey("order_id") || !(body.get("order_id") instanceof String)) {
+            return ResponseEntity.badRequest().body(Map.of(
+                    "error", Map.of("code", "BAD_REQUEST_ERROR", "description", "Field 'order_id' is required")
+            ));
         }
 
-        return ResponseEntity.status(201).body(response.toMap());
+        String orderId = (String) body.get("order_id");
+        Optional<Order> orderOpt = orderRepository.findById(orderId);
+        if (orderOpt.isEmpty()) {
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(Map.of(
+                    "error", Map.of("code", "BAD_REQUEST_ERROR", "description", "Order not found")
+            ));
+        }
+
+        Order order = orderOpt.get();
+        if (!order.getMerchantId().equals(merchant.getId())) {
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(Map.of(
+                    "error", Map.of("code", "BAD_REQUEST_ERROR", "description", "Order does not belong to merchant")
+            ));
+        }
+
+        // Validate Method
+        if (!body.containsKey("method") || !(body.get("method") instanceof String)) {
+            return ResponseEntity.badRequest().body(Map.of(
+                    "error", Map.of("code", "BAD_REQUEST_ERROR", "description", "Field 'method' is required")
+            ));
+        }
+
+        String method = ((String) body.get("method")).toLowerCase();
+        if (!"upi".equals(method) && !"card".equals(method)) {
+            return ResponseEntity.badRequest().body(Map.of(
+                    "error", Map.of("code", "BAD_REQUEST_ERROR", "description", "Invalid payment method. Supported: upi, card")
+            ));
+        }
+
+        Payment payment = new Payment();
+        payment.setId(generatePaymentId());
+        payment.setOrderId(orderId);
+        payment.setMerchantId(merchant.getId());
+        payment.setAmount(order.getAmount());
+        payment.setCurrency(order.getCurrency());
+        payment.setMethod(method);
+        payment.setStatus("pending");
+        payment.setCaptured(false);
+        payment.setCreatedAt(Instant.now());
+        payment.setUpdatedAt(Instant.now());
+
+        if ("upi".equals(method)) {
+            String vpa = (String) body.get("vpa");
+            if (vpa == null || vpa.trim().isEmpty()) {
+                return ResponseEntity.badRequest().body(Map.of(
+                        "error", Map.of("code", "BAD_REQUEST_ERROR", "description", "Field 'vpa' is required for UPI")
+                ));
+            }
+            payment.setVpa(vpa.trim());
+        } else {
+            String cardNumber = (String) body.get("card_number");
+            Object expMonthObj = body.get("card_exp_month");
+            Object expYearObj = body.get("card_exp_year");
+            String cardHolder = (String) body.get("card_holder");
+
+            if (cardNumber == null || expMonthObj == null || expYearObj == null) {
+                return ResponseEntity.badRequest().body(Map.of(
+                        "error", Map.of("code", "BAD_REQUEST_ERROR", "description", "Card details (card_number, card_exp_month, card_exp_year) are required")
+                ));
+            }
+            payment.setCardNumber(cardNumber);
+            payment.setCardExpMonth(((Number) expMonthObj).intValue());
+            payment.setCardExpYear(((Number) expYearObj).intValue());
+            payment.setCardHolder(cardHolder);
+        }
+
+        paymentRepository.saveAndFlush(payment);
+
+        // Cache response if Idempotency-Key was provided
+        if (idempotencyKeyHeader != null && !idempotencyKeyHeader.trim().isEmpty()) {
+            try {
+                String responseJson = objectMapper.writeValueAsString(payment);
+                IdempotencyKey idempKey = new IdempotencyKey(
+                        idempotencyKeyHeader.trim(),
+                        merchant.getId(),
+                        responseJson
+                );
+                idempotencyKeyRepository.saveAndFlush(idempKey);
+            } catch (Exception e) {
+                // non-fatal
+            }
+        }
+
+        // Enqueue background processing job to Redis
+        jobQueueService.enqueuePayment(new ProcessPaymentJob(payment.getId()));
+
+        return ResponseEntity.status(HttpStatus.CREATED).body(payment);
     }
 
-    @PostMapping("/{id}/capture")
+    @PostMapping("/{paymentId}/capture")
     public ResponseEntity<?> capturePayment(
-            @PathVariable String id,
-            @RequestHeader("X-Api-Key") String apiKey,
-            @RequestHeader("X-Api-Secret") String apiSecret) {
+            @PathVariable("paymentId") String paymentId,
+            @RequestHeader(value = "X-Api-Key", required = false) String apiKey,
+            @RequestHeader(value = "X-Api-Secret", required = false) String apiSecret,
+            @RequestBody(required = false) Map<String, Object> body) {
 
-        Merchant merchant = validateAuth(apiKey, apiSecret);
-        if (merchant == null) return ResponseEntity.status(401).body("Invalid Credentials");
+        Merchant merchant = authService.authenticate(apiKey, apiSecret);
+        if (merchant == null) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(Map.of(
+                    "error", Map.of("code", "AUTHENTICATION_ERROR", "description", "Invalid API credentials")
+            ));
+        }
 
-        Payment payment = paymentRepository.findById(id).orElse(null);
-        if (payment == null) return ResponseEntity.status(404).body("Payment not found");
+        Optional<Payment> paymentOpt = paymentRepository.findByIdAndMerchantId(paymentId, merchant.getId());
+        if (paymentOpt.isEmpty()) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).body(Map.of(
+                    "error", Map.of("code", "NOT_FOUND_ERROR", "description", "Payment not found")
+            ));
+        }
 
-        if (!"success".equals(payment.getStatus())) {
-            return ResponseEntity.status(400).body(Map.of("error", Map.of("code", "BAD_REQUEST_ERROR", "description", "Payment not in capturable state")));
+        Payment payment = paymentOpt.get();
+        if (!"success".equalsIgnoreCase(payment.getStatus())) {
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(Map.of(
+                    "error", Map.of("code", "BAD_REQUEST_ERROR", "description", "Payment not in capturable state")
+            ));
         }
 
         payment.setCaptured(true);
-        payment.setUpdatedAt(LocalDateTime.now());
+        payment.setUpdatedAt(Instant.now());
         paymentRepository.save(payment);
 
-        return ResponseEntity.ok(Map.of("captured", true, "status", "success", "id", payment.getId()));
+        return ResponseEntity.ok(payment);
+    }
+
+    @GetMapping("/{paymentId}")
+    public ResponseEntity<?> getPayment(
+            @PathVariable("paymentId") String paymentId,
+            @RequestHeader(value = "X-Api-Key", required = false) String apiKey,
+            @RequestHeader(value = "X-Api-Secret", required = false) String apiSecret) {
+
+        Merchant merchant = null;
+        if (apiKey != null && apiSecret != null) {
+            merchant = authService.authenticate(apiKey, apiSecret);
+        } else if (apiKey != null) {
+            merchant = authService.authenticateKeyOnly(apiKey);
+        }
+
+        Optional<Payment> paymentOpt = paymentRepository.findById(paymentId);
+        if (paymentOpt.isEmpty()) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).body(Map.of(
+                    "error", Map.of("code", "NOT_FOUND_ERROR", "description", "Payment not found")
+            ));
+        }
+
+        Payment payment = paymentOpt.get();
+        if (merchant != null && !payment.getMerchantId().equals(merchant.getId())) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).body(Map.of(
+                    "error", Map.of("code", "FORBIDDEN_ERROR", "description", "Access denied")
+            ));
+        }
+
+        return ResponseEntity.ok(payment);
+    }
+
+    @GetMapping
+    public ResponseEntity<?> listPayments(
+            @RequestHeader(value = "X-Api-Key", required = false) String apiKey,
+            @RequestHeader(value = "X-Api-Secret", required = false) String apiSecret) {
+
+        Merchant merchant = authService.authenticate(apiKey, apiSecret);
+        if (merchant == null) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(Map.of(
+                    "error", Map.of("code", "AUTHENTICATION_ERROR", "description", "Invalid API credentials")
+            ));
+        }
+
+        List<Payment> payments = paymentRepository.findByMerchantId(merchant.getId());
+        return ResponseEntity.ok(payments);
+    }
+
+    private String generatePaymentId() {
+        StringBuilder sb = new StringBuilder("pay_");
+        for (int i = 0; i < 16; i++) {
+            sb.append(ALPHANUMERIC.charAt(random.nextInt(ALPHANUMERIC.length())));
+        }
+        return sb.toString();
     }
 }

@@ -5,10 +5,9 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.scheduling.annotation.EnableScheduling;
 
 @SpringBootApplication
-@EnableScheduling // Required for the retry logic later
-public class PaymentGatewayApplication {
-
+@EnableScheduling
+public class GatewayApplication {
     public static void main(String[] args) {
-        SpringApplication.run(PaymentGatewayApplication.class, args);
+        SpringApplication.run(GatewayApplication.class, args);
     }
 }

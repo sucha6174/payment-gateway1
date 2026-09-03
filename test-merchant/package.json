@@ -1,0 +1,9 @@
+{
+  "name": "test-merchant",
+  "version": "1.0.0",
+  "description": "Test Merchant Webhook Receiver",
+  "main": "webhook-receiver.js",
+  "dependencies": {
+    "express": "^4.19.2"
+  }
+}

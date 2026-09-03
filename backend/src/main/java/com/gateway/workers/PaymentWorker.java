@@ -1,126 +1,174 @@
 package com.gateway.workers;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.gateway.jobs.DeliverWebhookJob;
 import com.gateway.jobs.ProcessPaymentJob;
 import com.gateway.models.Payment;
 import com.gateway.models.WebhookLog;
+import com.gateway.repositories.MerchantRepository;
 import com.gateway.repositories.PaymentRepository;
 import com.gateway.repositories.WebhookLogRepository;
-import org.springframework.beans.factory.annotation.Autowired;
+import com.gateway.services.JobQueueService;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.data.redis.core.RedisTemplate;
-import org.springframework.scheduling.annotation.Async;
-import org.springframework.stereotype.Service;
-import org.json.JSONObject;
+import org.springframework.stereotype.Component;
 
-import java.time.LocalDateTime;
-import java.util.UUID;
-import java.util.concurrent.TimeUnit;
+import java.time.Instant;
+import java.util.Optional;
+import java.util.Random;
 
-@Service
+@Component
 public class PaymentWorker {
 
-    @Autowired
-    private RedisTemplate<String, Object> redisTemplate;
+    private static final Logger log = LoggerFactory.getLogger(PaymentWorker.class);
 
-    @Autowired
-    private PaymentRepository paymentRepository;
+    private final PaymentRepository paymentRepository;
+    private final MerchantRepository merchantRepository;
+    private final WebhookLogRepository webhookLogRepository;
+    private final JobQueueService jobQueueService;
+    private final ObjectMapper objectMapper;
+    private final Random random = new Random();
 
-    @Autowired
-    private WebhookLogRepository webhookLogRepository;
+    @Value("${gateway.test-mode:false}")
+    private boolean testMode;
 
-    // We use a flag to keep the loop running
-    private boolean active = true;
+    @Value("${gateway.test-delay:1000}")
+    private long testProcessingDelay;
 
-    @Async // Runs in a separate thread
-    public void start() {
-        System.out.println("✅ Payment Worker Started...");
-        
-        while (active) {
-            try {
-                // 1. Wait for a job from Redis (Blocks for 5 seconds then loops)
-                ProcessPaymentJob job = (ProcessPaymentJob) redisTemplate.opsForList().rightPop("queue:payments", 5, TimeUnit.SECONDS);
+    @Value("${gateway.test-payment-success:true}")
+    private boolean testPaymentSuccess;
 
-                if (job != null) {
-                    processPayment(job.getPaymentId());
-                }
-            } catch (Exception e) {
-                e.printStackTrace();
+    public PaymentWorker(PaymentRepository paymentRepository,
+                         MerchantRepository merchantRepository,
+                         WebhookLogRepository webhookLogRepository,
+                         JobQueueService jobQueueService,
+                         ObjectMapper objectMapper) {
+        this.paymentRepository = paymentRepository;
+        this.merchantRepository = merchantRepository;
+        this.webhookLogRepository = webhookLogRepository;
+        this.jobQueueService = jobQueueService;
+        this.objectMapper = objectMapper;
+    }
+
+    public void setTestMode(boolean testMode) {
+        this.testMode = testMode;
+    }
+
+    public boolean isTestMode() {
+        return testMode;
+    }
+
+    public void setTestProcessingDelay(long testProcessingDelay) {
+        this.testProcessingDelay = testProcessingDelay;
+    }
+
+    public void setTestPaymentSuccess(boolean testPaymentSuccess) {
+        this.testPaymentSuccess = testPaymentSuccess;
+    }
+
+    public void processPayment(ProcessPaymentJob job) {
+        if (job == null || job.getPaymentId() == null) {
+            return;
+        }
+
+        jobQueueService.incrementProcessing();
+        String paymentId = job.getPaymentId();
+        log.info("Processing payment: {}", paymentId);
+
+        try {
+            Optional<Payment> paymentOpt = paymentRepository.findById(paymentId);
+            for (int i = 0; i < 15 && paymentOpt.isEmpty(); i++) {
+                try {
+                    Thread.sleep(100);
+                } catch (InterruptedException ignored) {}
+                paymentOpt = paymentRepository.findById(paymentId);
             }
-        }
-    }
 
-    private void processPayment(String paymentId) {
-        System.out.println("Processing Payment: " + paymentId);
-        
-        Payment payment = paymentRepository.findById(paymentId).orElse(null);
-        if (payment == null) return;
+            if (paymentOpt.isEmpty()) {
+                log.error("Payment not found with id: {}", paymentId);
+                jobQueueService.incrementFailed();
+                return;
+            }
 
-        // 2. Simulate Delay (5-10 seconds)
-        try {
-            long delay = 5000 + (long)(Math.random() * 5000); 
-            Thread.sleep(delay);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-        }
+            Payment payment = paymentOpt.get();
 
-        // 3. Determine Outcome (Random Success/Fail)
-        boolean isSuccess = determineOutcome(payment.getMethod());
+            // Simulate delay
+            long delay;
+            if (testMode) {
+                delay = testProcessingDelay > 0 ? testProcessingDelay : 1000;
+            } else {
+                // 5 to 10 seconds random delay
+                delay = 5000 + random.nextInt(5001);
+            }
 
-        // 4. Update Database
-        if (isSuccess) {
-            payment.setStatus("success");
-        } else {
-            payment.setStatus("failed");
-            payment.setErrorCode("BANK_FAILURE");
-            payment.setErrorDescription("The bank rejected the transaction.");
-        }
-        payment.setUpdatedAt(LocalDateTime.now());
-        paymentRepository.save(payment);
+            try {
+                Thread.sleep(delay);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
 
-        // 5. Enqueue Webhook (Notify the merchant)
-        enqueueWebhook(payment);
-    }
+            // Determine outcome
+            boolean isSuccess;
+            if (testMode) {
+                isSuccess = testPaymentSuccess;
+            } else {
+                if ("upi".equalsIgnoreCase(payment.getMethod())) {
+                    // UPI: 90% success
+                    isSuccess = random.nextInt(100) < 90;
+                } else {
+                    // Card: 95% success
+                    isSuccess = random.nextInt(100) < 95;
+                }
+            }
 
-    private boolean determineOutcome(String method) {
-        double chance = Math.random(); // 0.0 to 1.0
-        if ("upi".equalsIgnoreCase(method)) {
-            return chance < 0.90; // 90% success for UPI
-        } else {
-            return chance < 0.95; // 95% success for Cards
-        }
-    }
+            String eventName;
+            if (isSuccess) {
+                payment.setStatus("success");
+                payment.setErrorCode(null);
+                payment.setErrorDescription(null);
+                eventName = "payment.success";
+                log.info("Payment {} processed successfully", paymentId);
+            } else {
+                payment.setStatus("failed");
+                payment.setErrorCode("PAYMENT_FAILED");
+                payment.setErrorDescription("Payment processing failed by acquiring bank");
+                eventName = "payment.failed";
+                log.warn("Payment {} failed during processing", paymentId);
+            }
 
-    private void enqueueWebhook(Payment payment) {
-        try {
-            // Create the Payload JSON
-            JSONObject payload = new JSONObject();
-            payload.put("event", "payment." + payment.getStatus());
-            
-            JSONObject data = new JSONObject();
-            JSONObject paymentData = new JSONObject();
-            paymentData.put("id", payment.getId());
-            paymentData.put("amount", payment.getAmount());
-            paymentData.put("status", payment.getStatus());
-            paymentData.put("order_id", payment.getOrderId());
-            data.put("payment", paymentData);
-            
-            payload.put("data", data);
+            payment.setUpdatedAt(Instant.now());
+            paymentRepository.save(payment);
 
-            // Create Log Entry
-            WebhookLog log = new WebhookLog();
-            log.setMerchantId(payment.getMerchant().getId());
-            log.setEvent("payment." + payment.getStatus());
-            log.setPayload(payload.toString());
-            log.setNextRetryAt(LocalDateTime.now()); // Ready immediately
-            
-            WebhookLog savedLog = webhookLogRepository.save(log);
+            // Construct Webhook payload
+            ObjectNode payloadNode = objectMapper.createObjectNode();
+            payloadNode.put("event", eventName);
+            payloadNode.put("timestamp", Instant.now().getEpochSecond());
+            ObjectNode dataNode = payloadNode.putObject("data");
+            dataNode.set("payment", objectMapper.valueToTree(payment));
 
-            // Push to Webhook Queue
-            redisTemplate.opsForList().leftPush("queue:webhooks", new DeliverWebhookJob(savedLog.getId()));
-            
+            String payloadString = objectMapper.writeValueAsString(payloadNode);
+
+            // Create initial webhook log
+            WebhookLog webhookLog = new WebhookLog(payment.getMerchantId(), eventName, payloadString);
+            webhookLog = webhookLogRepository.save(webhookLog);
+
+            // Enqueue Webhook Delivery Job
+            DeliverWebhookJob webhookJob = new DeliverWebhookJob(
+                    payment.getMerchantId(),
+                    webhookLog.getId(),
+                    eventName,
+                    payloadString
+            );
+            jobQueueService.enqueueWebhook(webhookJob);
+            jobQueueService.incrementCompleted();
+
         } catch (Exception e) {
-            System.err.println("Failed to enqueue webhook: " + e.getMessage());
+            log.error("Error processing payment {}: {}", paymentId, e.getMessage(), e);
+            jobQueueService.incrementFailed();
+        } finally {
+            jobQueueService.decrementProcessing();
         }
     }
 }

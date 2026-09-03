@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Merchant Dashboard - Payment Gateway</title>
+    <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+    <div class="sidebar">
+        <div class="brand">Payment Gateway</div>
+        <a href="/" class="nav-item active">Dashboard</a>
+        <a href="/webhooks" class="nav-item">Webhooks</a>
+        <a href="/docs" class="nav-item">API Docs</a>
+    </div>
+
+    <div class="content">
+        <div class="page-title">Dashboard Overview</div>
+
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; margin-bottom: 24px;">
+            <div class="card" style="margin-bottom: 0;">
+                <div style="font-size: 13px; color: #64748b; font-weight: 500;">Worker Status</div>
+                <div id="worker-status" style="font-size: 24px; font-weight: 700; color: #166534; margin-top: 4px;">Running</div>
+            </div>
+            <div class="card" style="margin-bottom: 0;">
+                <div style="font-size: 13px; color: #64748b; font-weight: 500;">Pending Jobs</div>
+                <div id="jobs-pending" style="font-size: 24px; font-weight: 700; color: #2563eb; margin-top: 4px;">0</div>
+            </div>
+            <div class="card" style="margin-bottom: 0;">
+                <div style="font-size: 13px; color: #64748b; font-weight: 500;">Processing Jobs</div>
+                <div id="jobs-processing" style="font-size: 24px; font-weight: 700; color: #d97706; margin-top: 4px;">0</div>
+            </div>
+            <div class="card" style="margin-bottom: 0;">
+                <div style="font-size: 13px; color: #64748b; font-weight: 500;">Completed Jobs</div>
+                <div id="jobs-completed" style="font-size: 24px; font-weight: 700; color: #16a34a; margin-top: 4px;">0</div>
+            </div>
+        </div>
+
+        <div class="card">
+            <h3>Quick Links & Integration</h3>
+            <div style="display: flex; gap: 16px; margin-top: 16px;">
+                <a href="/webhooks" class="btn btn-primary" style="text-decoration: none;">Configure Webhooks</a>
+                <a href="/docs" class="btn btn-secondary" style="text-decoration: none;">View API Docs</a>
+                <a href="http://localhost:3001" target="_blank" class="btn btn-secondary" style="text-decoration: none;">Open Store Checkout Demo</a>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const API_BASE = window.location.protocol + '//' + window.location.hostname + ':8000';
+
+        async function fetchMetrics() {
+            try {
+                const res = await fetch(`${API_BASE}/api/v1/test/jobs/status`);
+                if (res.ok) {
+                    const data = await res.json();
+                    document.getElementById('worker-status').innerText = data.worker_status || 'running';
+                    document.getElementById('jobs-pending').innerText = data.pending || 0;
+                    document.getElementById('jobs-processing').innerText = data.processing || 0;
+                    document.getElementById('jobs-completed').innerText = data.completed || 0;
+                }
+            } catch (e) {
+                // non-fatal
+            }
+        }
+        fetchMetrics();
+        setInterval(fetchMetrics, 3000);
+    </script>
+</body>
+</html>
