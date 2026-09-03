@@ -70,6 +70,31 @@ def api_request(method, path, data=None, headers=None):
     except Exception as e:
         return 0, {"error": str(e)}
 
+def public_api_request(method, path, data=None, headers=None):
+    url = f"{API_BASE}{path}"
+    req_headers = {
+        "Content-Type": "application/json",
+        "X-Api-Key": API_KEY
+    }
+    if headers:
+        req_headers.update(headers)
+
+    body_bytes = json.dumps(data).encode('utf-8') if data else None
+    req = urllib.request.Request(url, data=body_bytes, headers=req_headers, method=method)
+
+    try:
+        with urllib.request.urlopen(req) as resp:
+            resp_body = resp.read().decode('utf-8')
+            return resp.status, json.loads(resp_body) if resp_body else {}
+    except urllib.error.HTTPError as e:
+        resp_body = e.read().decode('utf-8')
+        try:
+            return e.code, json.loads(resp_body) if resp_body else {}
+        except Exception:
+            return e.code, {"error": resp_body}
+    except Exception as e:
+        return 0, {"error": str(e)}
+
 def http_get_text(url):
     try:
         req = urllib.request.Request(url)
@@ -142,6 +167,74 @@ def run_tests():
     assert payment_id.startswith("pay_"), f"Invalid payment ID format: {payment_id}"
     assert payment["status"] == "pending", f"Initial payment status must be 'pending', got: {payment['status']}"
     print(f"  [PASS] Payment created: {payment_id}, initial status: {payment['status']}")
+
+    # 4.1 Strict Server-to-Server Security Check: POST /api/v1/payments must reject missing X-Api-Secret
+    print("\n[TEST 4.1] Testing Strict Security on POST /api/v1/payments (Reject missing X-Api-Secret)...")
+    status_sec, res_sec = public_api_request("POST", "/api/v1/payments", data=payment_data)
+    assert status_sec == 401, f"Expected 401 Unauthorized when X-Api-Secret is omitted from /api/v1/payments, got: {status_sec}"
+    print("  [PASS] Server-to-server endpoint strictly requires both X-Api-Key and X-Api-Secret (Returned 401)")
+
+    # 4.2 Hosted Checkout Payment Flow: UPI via /api/v1/payments/public (Key Only)
+    print("\n[TEST 4.2] Testing Hosted Checkout Payment Flow with UPI via /api/v1/payments/public (Public Key only)...")
+    upi_chk_data = {
+        "order_id": order_id,
+        "method": "upi",
+        "vpa": "customer@upi"
+    }
+    status_upi, upi_pmt = public_api_request("POST", "/api/v1/payments/public", data=upi_chk_data)
+    assert status_upi == 201, f"Failed hosted UPI payment: {status_upi}, {upi_pmt}"
+    assert upi_pmt["status"] == "pending", f"Expected initial status 'pending', got: {upi_pmt['status']}"
+    upi_id = upi_pmt["id"]
+    print(f"  [PASS] Hosted UPI payment created: {upi_id} (pending)")
+
+    # Poll for worker processing of hosted UPI payment
+    print("  Waiting for Redis worker to process hosted UPI payment...")
+    start_poll = time.time()
+    upi_success = False
+    while time.time() - start_poll < 15:
+        st, p_poll = public_api_request("GET", f"/api/v1/payments/{upi_id}")
+        if st == 200 and p_poll.get("status") == "success":
+            upi_success = True
+            break
+        time.sleep(1)
+    assert upi_success, "Hosted UPI payment status did not transition to success"
+    print(f"  [PASS] Hosted UPI payment successfully transitioned to 'success' via Redis worker")
+
+    # 4.3 Hosted Checkout Payment Flow: Card via /api/v1/payments/public (Key Only)
+    print("\n[TEST 4.3] Testing Hosted Checkout Payment Flow with Card via /api/v1/payments/public (Public Key only)...")
+    card_chk_data = {
+        "order_id": order_id,
+        "method": "card",
+        "card_number": "4111222233334444",
+        "card_exp_month": 12,
+        "card_exp_year": 2028,
+        "card_holder": "Jane Doe"
+    }
+    status_card, card_pmt = public_api_request("POST", "/api/v1/payments/public", data=card_chk_data)
+    assert status_card == 201, f"Failed hosted Card payment: {status_card}, {card_pmt}"
+    assert card_pmt["status"] == "pending", f"Expected initial status 'pending', got: {card_pmt['status']}"
+    card_id = card_pmt["id"]
+    print(f"  [PASS] Hosted Card payment created: {card_id} (pending)")
+
+    # Poll for worker processing of hosted Card payment
+    print("  Waiting for Redis worker to process hosted Card payment...")
+    start_poll = time.time()
+    card_success = False
+    while time.time() - start_poll < 15:
+        st, p_poll = public_api_request("GET", f"/api/v1/payments/{card_id}")
+        if st == 200 and p_poll.get("status") == "success":
+            card_success = True
+            break
+        time.sleep(1)
+    assert card_success, "Hosted Card payment status did not transition to success"
+    print(f"  [PASS] Hosted Card payment successfully transitioned to 'success' via Redis worker")
+
+    # 4.4 Default Seed Order TEST_1 Verification for Hosted Checkout
+    print("\n[TEST 4.4] Verifying Default Seed Order TEST_1 for manual hosted checkout...")
+    st_t1, order_t1 = public_api_request("GET", "/api/v1/orders/TEST_1")
+    assert st_t1 == 200, f"Failed to fetch seed order TEST_1: status {st_t1}, {order_t1}"
+    assert order_t1["amount"] == 50000, f"Expected amount 50000, got: {order_t1['amount']}"
+    print(f"  [PASS] Default seed order TEST_1 verified: Amount {order_t1['amount']} (INR {order_t1['amount']/100:.2f})")
 
     # 5. Idempotency Duplicate Request
     print("\n[TEST 5] Testing Idempotency duplicate request with identical key...")
@@ -300,10 +393,10 @@ def run_tests():
         assert f'data-testid="{tid}"' in docs_html, f"dashboard/docs missing data-testid='{tid}'"
     assert "onClose" in docs_html, "dashboard/docs SDK snippet missing onClose documentation"
     assert "open()" in docs_html, "dashboard/docs SDK snippet missing open() documentation"
-    print("  [PASS] All 7 required data-testid attributes verified on API Documentation page!")
+    print(f"  [PASS] All 7 required data-testid attributes verified on API Documentation page!")
 
     print("\n" + "=" * 70)
-    print("🎉 ALL 12 VERIFICATION SUITES PASSED WITH 100% SUCCESS!")
+    print("SUCCESS: ALL 12 VERIFICATION SUITES PASSED WITH 100% SUCCESS!")
     print("=" * 70)
     return True
 

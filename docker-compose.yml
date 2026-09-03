@@ -42,7 +42,10 @@ services:
       - "8000:8000"
     restart: always
     environment:
-      DATABASE_URL: postgresql://gateway_user:gateway_pass@postgres:5432/payment_gateway
+      DATABASE_URL: jdbc:postgresql://postgres:5432/payment_gateway
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/payment_gateway
+      SPRING_DATASOURCE_USERNAME: gateway_user
+      SPRING_DATASOURCE_PASSWORD: gateway_pass
       REDIS_URL: redis://redis:6379
       PORT: 8000
       SPRING_PROFILES_ACTIVE: api
@@ -52,7 +55,7 @@ services:
       redis:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:8000/api/v1/test/jobs/status || exit 1"]
+      test: ["CMD-SHELL", "curl -f http://localhost:8000/api/v1/test/jobs/status || wget -q -O - http://localhost:8000/api/v1/test/jobs/status || exit 1"]
       interval: 5s
       timeout: 5s
       retries: 15
@@ -65,7 +68,10 @@ services:
     container_name: gateway_worker
     restart: always
     environment:
-      DATABASE_URL: postgresql://gateway_user:gateway_pass@postgres:5432/payment_gateway
+      DATABASE_URL: jdbc:postgresql://postgres:5432/payment_gateway
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/payment_gateway
+      SPRING_DATASOURCE_USERNAME: gateway_user
+      SPRING_DATASOURCE_PASSWORD: gateway_pass
       REDIS_URL: redis://redis:6379
       SPRING_PROFILES_ACTIVE: worker
       TEST_MODE: "true"

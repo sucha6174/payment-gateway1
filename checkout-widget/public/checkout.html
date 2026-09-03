@@ -138,11 +138,12 @@
             }
 
             try {
-                const res = await fetch(`${apiBase}/api/v1/payments`, {
+                const res = await fetch(`${apiBase}/api/v1/payments/public`, {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
-                        'X-Api-Key': apiKey
+                        'X-Api-Key': apiKey,
+                        'Idempotency-Key': 'chk_' + (orderId || 'demo') + '_' + Date.now()
                     },
                     body: JSON.stringify(payload)
                 });
@@ -150,19 +151,61 @@
                 const data = await res.json();
 
                 if (res.status === 201) {
+                    const paymentId = data.id;
                     statusBox.className = 'status-box success';
-                    statusBox.innerText = 'Payment initiated! Payment ID: ' + data.id;
+                    statusBox.innerText = 'Payment initiated (pending)... ID: ' + paymentId;
 
-                    // Send postMessage to parent SDK
-                    window.parent.postMessage({
-                        type: 'payment_success',
-                        data: {
-                            paymentId: data.id,
-                            orderId: data.order_id,
-                            amount: data.amount,
-                            status: data.status
+                    // Poll for asynchronous completion
+                    let attempts = 0;
+                    const pollInterval = setInterval(async () => {
+                        attempts++;
+                        try {
+                            const pollRes = await fetch(`${apiBase}/api/v1/payments/${encodeURIComponent(paymentId)}`, {
+                                headers: { 'X-Api-Key': apiKey }
+                            });
+                            if (pollRes.ok) {
+                                const pollData = await pollRes.json();
+                                if (pollData.status === 'success') {
+                                    clearInterval(pollInterval);
+                                    statusBox.className = 'status-box success';
+                                    statusBox.innerText = 'Payment successful! Payment ID: ' + paymentId;
+
+                                    window.parent.postMessage({
+                                        type: 'payment_success',
+                                        data: {
+                                            paymentId: pollData.id,
+                                            orderId: pollData.order_id,
+                                            amount: pollData.amount,
+                                            status: pollData.status
+                                        }
+                                    }, '*');
+                                    payBtn.innerText = 'Paid';
+                                } else if (pollData.status === 'failed') {
+                                    clearInterval(pollInterval);
+                                    const errMsg = pollData.error_description || 'Payment processing failed';
+                                    statusBox.className = 'status-box error';
+                                    statusBox.innerText = errMsg;
+
+                                    window.parent.postMessage({
+                                        type: 'payment_failed',
+                                        data: { code: pollData.error_code || 'PAYMENT_FAILED', description: errMsg }
+                                    }, '*');
+                                    payBtn.disabled = false;
+                                    payBtn.innerText = 'Pay Now';
+                                }
+                            }
+                        } catch (pollErr) {
+                            console.warn('Status poll error:', pollErr);
                         }
-                    }, '*');
+
+                        if (attempts >= 15) {
+                            clearInterval(pollInterval);
+                            if (payBtn.innerText !== 'Paid') {
+                                payBtn.disabled = false;
+                                payBtn.innerText = 'Pay Now';
+                            }
+                        }
+                    }, 1000);
                 } else {
                     const errorMsg = (data.error && data.error.description) || 'Payment failed to initiate';
                     statusBox.className = 'status-box error';

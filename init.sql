@@ -113,3 +113,10 @@ ON CONFLICT (email) DO UPDATE
 SET api_key = 'key_test_abc123',
     api_secret = 'secret_test_xyz789',
     webhook_secret = 'whsec_test_abc123';
+
+-- Seed Default Test Order for Hosted Checkout Testing
+INSERT INTO orders (id, merchant_id, amount, currency, receipt, status)
+SELECT 'TEST_1', id, 50000, 'INR', 'rcpt_test_1', 'created'
+FROM merchants WHERE api_key = 'key_test_abc123'
+ON CONFLICT (id) DO NOTHING;
+

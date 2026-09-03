@@ -12,6 +12,8 @@ A robust, enterprise-grade payment gateway backend and checkout solution enginee
 
 - **Developer**: KALARI SRISUCHA
 - **GitHub Username**: [sucha6174](https://github.com/sucha6174)
+- **Email**: [23mh1a442@acoe.edu.in](mailto:23mh1a442@acoe.edu.in)
+- **College**: Aditya Engineering College / Aditya University
 - **Repository**: [https://github.com/sucha6174/payment-gateway1](https://github.com/sucha6174/payment-gateway1)
 
 ---

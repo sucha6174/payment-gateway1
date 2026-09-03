@@ -59,18 +59,59 @@ public class PaymentController {
             @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKeyHeader,
             @RequestBody Map<String, Object> body) {
 
-        Merchant merchant = null;
-        if (apiKey != null && apiSecret != null) {
-            merchant = authService.authenticate(apiKey, apiSecret);
-        } else if (apiKey != null) {
-            merchant = authService.authenticateKeyOnly(apiKey);
+        if (apiKey == null || apiKey.trim().isEmpty() || apiSecret == null || apiSecret.trim().isEmpty()) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(Map.of(
+                    "error", Map.of("code", "AUTHENTICATION_ERROR", "description", "Missing API credentials. Both X-Api-Key and X-Api-Secret are required for server-to-server payment requests.")
+            ));
         }
 
+        Merchant merchant = authService.authenticate(apiKey, apiSecret);
         if (merchant == null) {
             return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(Map.of(
                     "error", Map.of("code", "AUTHENTICATION_ERROR", "description", "Invalid API credentials")
             ));
         }
+
+        return doCreatePayment(merchant, idempotencyKeyHeader, body);
+    }
+
+    @PostMapping({"/public", "/hosted"})
+    @Transactional
+    public ResponseEntity<?> createHostedPayment(
+            @RequestHeader(value = "X-Api-Key", required = false) String apiKeyHeader,
+            @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKeyHeader,
+            @RequestBody Map<String, Object> body) {
+
+        String apiKey = (apiKeyHeader != null && !apiKeyHeader.trim().isEmpty())
+                ? apiKeyHeader.trim()
+                : (body != null && body.containsKey("key") ? String.valueOf(body.get("key")).trim() : null);
+
+        if (apiKey == null && body != null && body.containsKey("api_key")) {
+            apiKey = String.valueOf(body.get("api_key")).trim();
+        }
+
+        if (apiKey == null || apiKey.trim().isEmpty()) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(Map.of(
+                    "error", Map.of("code", "AUTHENTICATION_ERROR", "description", "Missing API Key")
+            ));
+        }
+
+        Merchant merchant = authService.authenticateKeyOnly(apiKey);
+        if (merchant == null) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(Map.of(
+                    "error", Map.of("code", "AUTHENTICATION_ERROR", "description", "Invalid API key")
+            ));
+        }
+
+        String idempKey = idempotencyKeyHeader;
+        if ((idempKey == null || idempKey.trim().isEmpty()) && body != null && body.containsKey("idempotency_key")) {
+            idempKey = String.valueOf(body.get("idempotency_key"));
+        }
+
+        return doCreatePayment(merchant, idempKey, body);
+    }
+
+    private ResponseEntity<?> doCreatePayment(Merchant merchant, String idempotencyKeyHeader, Map<String, Object> body) {
 
         // Idempotency Key Handling
         if (idempotencyKeyHeader != null && !idempotencyKeyHeader.trim().isEmpty()) {
