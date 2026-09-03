@@ -98,6 +98,8 @@ services:
       PORT: 3000
       MERCHANT_API_KEY: key_test_abc123
       MERCHANT_API_SECRET: secret_test_xyz789
+    volumes:
+      - ./dashboard/public:/app/public
     depends_on:
       api:
         condition: service_healthy
@@ -112,6 +114,8 @@ services:
       - "3001:3001"
     environment:
       PORT: 3001
+    volumes:
+      - ./checkout-widget/public:/app/public
     depends_on:
       api:
         condition: service_healthy
