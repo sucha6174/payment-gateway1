@@ -3,6 +3,7 @@ WORKDIR /app
 COPY pom.xml .
 RUN mvn dependency:go-offline -B || true
 COPY src ./src
+ENV MAVEN_OPTS="-Xmx512m"
 RUN mvn clean package -DskipTests
 
 FROM eclipse-temurin:17-jre-alpine
